@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vortilo"
+version = "0.1.0"
+description = "Librería de NLP basada en reglas para Esperanto, con API tipo spaCy"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Equipo vortilo (CUNEF - Minería de Textos 2026/2027)" }]
+keywords = ["nlp", "esperanto", "tokenizer", "lemmatizer", "pos-tagging"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Natural Language :: Esperanto",
+    "Topic :: Text Processing :: Linguistic",
+]
+# Sin dependencias: la librería es Python puro.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
+dataset = ["requests>=2.25"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+addopts = "--doctest-modules"

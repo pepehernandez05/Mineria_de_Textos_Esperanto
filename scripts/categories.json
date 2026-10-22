@@ -1,0 +1,12 @@
+{
+  "seed": 42,
+  "min_words": 12,
+  "max_per_class": 1500,
+  "max_articles_per_class": 400,
+  "low_content_words": 5,
+  "classes": {
+    "mamuloj":   { "categories": ["Kategorio:Mamuloj"],   "depth": 2 },
+    "birdoj":    { "categories": ["Kategorio:Birdoj"],    "depth": 2 },
+    "reptilioj": { "categories": ["Kategorio:Reptilioj"], "depth": 2 }
+  }
+}

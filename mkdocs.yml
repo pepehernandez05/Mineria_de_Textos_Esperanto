@@ -1,0 +1,25 @@
+site_name: vortilo
+site_description: Librería de NLP basada en reglas para Esperanto
+repo_url: https://github.com/USUARIO/vortilo
+theme:
+  name: material
+  language: es
+nav:
+  - Inicio: index.md
+  - Guía de uso: usage.md
+  - Diseño lingüístico: design.md
+  - Referencia de la API: api.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - tables
