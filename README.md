@@ -69,4 +69,11 @@ pytest
 
 ## Licencia
 
-MIT
+El código está bajo licencia MIT (ver `LICENSE`).
+
+Los textos de `data/` no están bajo MIT: proceden de la
+[Wikipedia en Esperanto](https://eo.wikipedia.org) y se distribuyen bajo
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.es). Se han
+modificado: se ha limpiado el marcado, se han dividido en párrafos y se han
+etiquetado por temática. `data/dataset_meta.csv` indica el artículo y la revisión
+de origen de cada párrafo; sus autores figuran en el historial de cada artículo.
