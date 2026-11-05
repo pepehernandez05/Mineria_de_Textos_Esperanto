@@ -6,7 +6,8 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 ya no ofrece Python 3.9, que el proyecto sigue soportando.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
