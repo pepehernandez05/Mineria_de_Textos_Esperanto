@@ -1,0 +1,30 @@
+{
+  "seed": 42,
+  "min_words": 12,
+  "max_per_class": 1500,
+  "ambiguous_articles": 98,
+  "dropped": {
+    "duplicado": 52,
+    "recorte_por_clase": 1759
+  },
+  "classes": {
+    "mamuloj": {
+      "paragraphs": 1500,
+      "articles": 360,
+      "mean_words": 59.1,
+      "low_content_pct": 0.1
+    },
+    "birdoj": {
+      "paragraphs": 1500,
+      "articles": 380,
+      "mean_words": 51.2,
+      "low_content_pct": 0.3
+    },
+    "reptilioj": {
+      "paragraphs": 703,
+      "articles": 157,
+      "mean_words": 61.0,
+      "low_content_pct": 0.6
+    }
+  }
+}

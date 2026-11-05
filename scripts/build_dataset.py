@@ -7,6 +7,7 @@ Uso::
     python scripts/build_dataset.py                       # usa scripts/categories.json
     python scripts/build_dataset.py --config otra.json --out data/dataset.csv
     python scripts/build_dataset.py --explore "Kategorio:Mamuloj"   # solo contar
+    python scripts/build_dataset.py --no-cache            # ignora la caché en disco
 
 Proceso
 -------
@@ -28,6 +29,14 @@ Proceso
      reproducir exactamente qué versión de cada artículo se usó.
    * ``dataset_report.json``: estadísticas y medida del ruido.
 
+Peticiones a la API
+-------------------
+El cliente sigue las recomendaciones de Wikimedia: User-Agent con contacto,
+peticiones en serie con una pausa mínima, parámetro ``maxlag`` y respeto de la
+cabecera ``Retry-After`` ante un 429/503. Además, cada respuesta correcta se
+guarda en una caché en disco, de modo que si el script se interrumpe se puede
+relanzar y continúa donde lo dejó sin repetir peticiones.
+
 Ruido de etiquetado
 -------------------
 Cada párrafo hereda la etiqueta de su artículo, pero hay párrafos genéricos
@@ -41,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import re
@@ -55,7 +65,14 @@ import requests
 import vortilo
 
 API = "https://eo.wikipedia.org/w/api.php"
-USER_AGENT = "vortilo-dataset/0.1 (CUNEF Mineria de Textos; practica academica)"
+# Wikimedia pide un User-Agent descriptivo con una forma de contacto (URL o correo).
+USER_AGENT = (
+    "vortilo-dataset/0.1 (https://github.com/pepehernandez05/vortilo; "
+    "CUNEF Mineria de Textos; practica academica)"
+)
+#: Retraso de replicación máximo (s) que toleramos; si el servidor va peor,
+#: la API responde con error ``maxlag`` y esperamos.
+MAXLAG = 5
 
 #: Secciones a partir de las cuales el artículo ya no tiene texto útil.
 TAIL_SECTIONS = re.compile(
@@ -67,28 +84,95 @@ HEADING = re.compile(r"^=+.*=+\s*$")
 
 
 # --------------------------------------------------------------------------- #
-# Cliente de la API (con reintentos)
+# Cliente de la API (con límite de ritmo, reintentos y caché)
 # --------------------------------------------------------------------------- #
 
 
 class WikiClient:
-    def __init__(self, delay: float = 0.1, retries: int = 4, timeout: float = 20.0):
+    def __init__(
+        self,
+        delay: float = 0.5,
+        retries: int = 6,
+        timeout: float = 30.0,
+        max_wait: float = 120.0,
+        cache_dir: Optional[Path] = None,
+    ):
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
-        self.delay = delay
+        self.delay = delay            # pausa mínima entre peticiones (s)
         self.retries = retries
         self.timeout = timeout
+        self.max_wait = max_wait      # tope de espera ante 429/maxlag (s)
+        self.cache_dir = cache_dir
+        self._last_request = 0.0
+        if self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # -- utilidades internas ------------------------------------------------
+
+    def _throttle(self) -> None:
+        """Garantiza una pausa mínima entre dos peticiones consecutivas."""
+        elapsed = time.monotonic() - self._last_request
+        if elapsed < self.delay:
+            time.sleep(self.delay - elapsed)
+
+    def _retry_after(self, resp: requests.Response, default: float) -> float:
+        """Segundos a esperar según ``Retry-After`` (o ``default`` si no viene)."""
+        try:
+            return min(float(resp.headers["Retry-After"]), self.max_wait)
+        except (KeyError, ValueError):
+            return min(default, self.max_wait)
+
+    def _cache_file(self, params: dict) -> Optional[Path]:
+        if self.cache_dir is None:
+            return None
+        key = hashlib.sha1(json.dumps(params, sort_keys=True).encode("utf-8")).hexdigest()
+        return self.cache_dir / f"{key}.json"
+
+    # -- petición con reintentos --------------------------------------------
 
     def get(self, **params) -> dict:
         params = {"format": "json", "formatversion": "2", **params}
-        for attempt in range(self.retries):
+
+        cache_file = self._cache_file(params)
+        if cache_file is not None and cache_file.exists():
             try:
-                resp = self.session.get(API, params=params, timeout=self.timeout)
+                return json.loads(cache_file.read_text(encoding="utf-8"))
+            except ValueError:
+                pass  # caché corrupta: se vuelve a pedir
+
+        request_params = {**params, "maxlag": MAXLAG}
+        for attempt in range(self.retries):
+            self._throttle()
+            try:
+                resp = self.session.get(API, params=request_params, timeout=self.timeout)
+                self._last_request = time.monotonic()
+
+                # Límite de peticiones o servidor saturado: respetar Retry-After
+                if resp.status_code in (429, 503):
+                    wait = self._retry_after(resp, default=5 * 2 ** attempt)
+                    print(f"  ! HTTP {resp.status_code}; espero {wait:.0f}s "
+                          f"(intento {attempt + 1}/{self.retries})", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+
                 resp.raise_for_status()
-                time.sleep(self.delay)
-                return resp.json()
+                data = resp.json()
+
+                # Retraso de replicación en el servidor (maxlag)
+                if data.get("error", {}).get("code") == "maxlag":
+                    wait = self._retry_after(resp, default=5.0)
+                    print(f"  ! maxlag; espero {wait:.0f}s "
+                          f"(intento {attempt + 1}/{self.retries})", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+
+                if cache_file is not None and "error" not in data:
+                    cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                return data
             except (requests.RequestException, ValueError) as exc:
-                wait = 2 ** attempt
+                self._last_request = time.monotonic()
+                wait = min(2 ** attempt, self.max_wait)
                 print(f"  ! error ({exc}); reintento en {wait}s", file=sys.stderr)
                 time.sleep(wait)
         raise RuntimeError(f"La API falló {self.retries} veces con {params}")
@@ -274,15 +358,21 @@ def build(config: dict, out: Path, client: WikiClient) -> None:
 
 def main(argv: Optional[List[str]] = None) -> None:
     here = Path(__file__).resolve().parent
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--config", type=Path, default=here / "categories.json")
     parser.add_argument("--out", type=Path, default=here.parent / "data" / "dataset.csv")
     parser.add_argument("--explore", nargs="*", help="Solo contar artículos de estas categorías")
     parser.add_argument("--depth", type=int, default=1, help="Profundidad para --explore")
-    parser.add_argument("--delay", type=float, default=0.1, help="Pausa entre peticiones (s)")
+    parser.add_argument("--delay", type=float, default=0.5,
+                        help="Pausa mínima entre peticiones (s)")
+    parser.add_argument("--cache-dir", type=Path, default=here.parent / "data" / ".cache",
+                        help="Carpeta de caché de respuestas de la API")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="No usar caché en disco")
     args = parser.parse_args(argv)
 
-    client = WikiClient(delay=args.delay)
+    cache_dir = None if args.no_cache else args.cache_dir
+    client = WikiClient(delay=args.delay, cache_dir=cache_dir)
     if args.explore:
         explore(client, args.explore, args.depth)
         return
