@@ -73,6 +73,21 @@ class TestTokenizer:
     def test_elision(self, tok):
         assert [t.text for t in tok("l' urbo kaj dom'")] == ["l'", "urbo", "kaj", "dom'"]
 
+    def test_elision_without_space(self, tok):
+        doc = tok("l'urbo")
+        assert [t.text for t in doc] == ["l'", "urbo"]
+
+    def test_single_quotes_are_not_elision(self, tok):
+        assert [t.text for t in tok("'hundo' kaj dom'")] == ["'", "hundo", "'", "kaj", "dom'"]
+
+    def test_quote_state_resets_on_new_line(self, tok):
+        assert [t.text for t in tok("'hundo\ndom'")] == ["'", "hundo", "dom'"]
+
+    def test_alphanumeric_word_kept(self, tok):
+        doc = tok("H2O kaj CO2")
+        assert [t.text for t in doc] == ["H2O", "kaj", "CO2"]
+        assert doc[0].kind == "WORD"
+
     def test_hyphen_split(self, tok):
         assert [t.text for t in tok("ĉi-jare")] == ["ĉi", "-", "jare"]
 
@@ -109,6 +124,14 @@ class TestSentences:
         assert sentence_tokenizer("Bestoj, ekz. hundoj, vivas. Jes.") == [
             "Bestoj, ekz. hundoj, vivas.", "Jes.",
         ]
+
+    def test_closing_abbreviation_can_end_sentence(self):
+        assert sentence_tokenizer("Hundoj, katoj ktp. Li venis.") == [
+            "Hundoj, katoj ktp.", "Li venis.",
+        ]
+
+    def test_closing_abbreviation_mid_sentence_does_not_split(self):
+        assert len(sentence_tokenizer("Hundoj, katoj ktp. vivas ĉi tie.")) == 1
 
     def test_decimal_does_not_split(self):
         assert len(sentence_tokenizer("Pi estas 3.14 proksimume.")) == 1

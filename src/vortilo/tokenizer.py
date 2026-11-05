@@ -1,15 +1,15 @@
 """Tokenizador: divide un texto en tokens.
 
-El tokenizador recorre el texto con **una única expresión regular** formada
-por varias alternativas. En cada posición gana la primera alternativa que
-encaja, así que el orden expresa la prioridad:
+
+El tokenizador recorre el texto de izquierda a derecha. En cada posición prueba
+estos tipos de token, en orden, y se queda con el primero que encaja:
 
 1. URL (``https://…``, ``www.…``)
 2. Correo electrónico
-3. Abreviatura conocida (``ekz.``, ``k.t.p.``, ``d-ro``) → no corta la frase
+3. Abreviatura conocida (``ekz.``, ``k.t.p.``, ``d-ro``)
 4. Ordinal con cifras (``20-a``, ``1-an``)
 5. Número (``1887``, ``3,14``, ``1.000.000``, ``50%``)
-6. Palabra, con elisión opcional (``l'``, ``dom'``)
+6. Palabra (``hundo``, ``H2O``), con elisión opcional (``l'``, ``dom'``)
 7. Puntos suspensivos (``...``)
 8. Cualquier otro carácter que no sea espacio → puntuación/símbolo
 
@@ -21,7 +21,6 @@ hace spaCy con los infijos.
 
 from __future__ import annotations
 
-import re
 from typing import Iterator, List, Optional, Tuple
 
 from vortilo import lexicon
@@ -30,36 +29,140 @@ from vortilo.tokens import ABBR, EMAIL, NUM, ORDINAL, PUNCT, SYM, URL, WORD, Doc
 
 __all__ = ["Tokenizer", "sentence_tokenizer", "word_tokenizer"]
 
-#: Letra: cualquier carácter alfabético Unicode (incluye ĉ ĝ ĥ ĵ ŝ ŭ).
-_LETTER = r"[^\W\d_]"
-
 #: Signos que se consideran puntuación (el resto de no-alfanuméricos son símbolos).
 _PUNCT_CHARS = set(".,;:!?¿¡\"'()[]{}-–—…/«»“”‘’")
 
+_URL_PREFIXES = ("https://", "http://", "www.")
 
-def _build_regex() -> re.Pattern:
-    abbrevs = sorted(lexicon.ABBREVIATIONS, key=len, reverse=True)
-    # Las de una sola letra (n., m., j.) solo en minúscula: "M. Boulton" es una
-    # inicial, no "mortis". Las demás, sin distinguir mayúsculas (Ekz., S-ro).
-    long_alt = "|".join(re.escape(a) for a in abbrevs if len(a) > 2)
-    short_alt = "|".join(re.escape(a) for a in abbrevs if len(a) <= 2)
-    parts = [
-        (URL, r"(?i:(?:https?://|www\.)[^\s<>\"]+[^\s<>\".,;:!?)\]])"),
-        (EMAIL, r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
-        # Abreviatura: no puede ir pegada a letras por ninguno de los lados.
-        (ABBR, rf"(?<!{_LETTER})(?:(?i:{long_alt})|{short_alt})(?!{_LETTER})"),
-        (ORDINAL, r"\d+-a(?:j)?(?:n)?(?!\w)"),
-        (NUM, r"\d+(?:[.,]\d+)*%?"),
-        # Palabra; el apóstrofo final solo si NO va seguido de otra letra.
-        (WORD, rf"{_LETTER}+(?:'(?!{_LETTER}))?"),
-        (PUNCT, r"\.\.\.|…"),
-        ("OTHER", r"\S"),
-    ]
-    pattern = "|".join(f"(?P<{name}>{rx})" for name, rx in parts)
-    return re.compile(pattern)
+#: De más larga a más corta, para que ``ktp.`` gane a ``ktp``.
+_ABBREVIATIONS = sorted(lexicon.ABBREVIATIONS, key=len, reverse=True)
+
+_ORDINAL_ENDINGS = ("-ajn", "-aj", "-an", "-a")
 
 
-_TOKEN_RE = _build_regex()
+def _url_end(text: str, i: int) -> Optional[int]:
+    """Fin de la URL que empieza en ``i``, o ``None`` si no hay ninguna."""
+    start = text[i : i + 8].lower()
+    prefix = next((p for p in _URL_PREFIXES if start.startswith(p)), None)
+    if prefix is None:
+        return None
+    end = i
+    while end < len(text) and not text[end].isspace() and text[end] not in '<>"':
+        end += 1
+    # La puntuación final pertenece a la frase, no a la URL.
+    end = i + len(text[i:end].rstrip(".,;:!?)]"))
+    return end if end > i + len(prefix) else None
+
+
+def _email_end(text: str, i: int) -> Optional[int]:
+    """Fin del correo que empieza en ``i``, o ``None`` si no hay ninguno."""
+    at = i
+    while at < len(text) and (text[at].isalnum() or text[at] in "._+-"):
+        at += 1
+    if at == i or at == len(text) or text[at] != "@":
+        return None
+    end = at + 1
+    while end < len(text) and (text[end].isalnum() or text[end] in "._-"):
+        end += 1
+    domain = text[at + 1 : end].rstrip(".")
+    return at + 1 + len(domain) if "." in domain else None
+
+
+def _abbreviation_end(text: str, i: int) -> Optional[int]:
+    """Fin de la abreviatura que empieza en ``i``, o ``None`` si no hay ninguna.
+
+    Las de una sola letra (``n.``, ``m.``, ``j.``) solo valen en minúscula:
+    ``M. Boulton`` es una inicial, no "mortis". Las demás no distinguen
+    mayúsculas (``Ekz.``, ``S-ro``).
+    """
+    for abbreviation in _ABBREVIATIONS:
+        end = i + len(abbreviation)
+        piece = text[i:end]
+        if len(abbreviation) > 2:
+            piece = piece.lower()
+        if piece == abbreviation and not (end < len(text) and text[end].isalpha()):
+            return end
+    return None
+
+
+def _digits_end(text: str, i: int) -> int:
+    """Posición del primer carácter desde ``i`` que no es una cifra."""
+    while i < len(text) and text[i].isdecimal():
+        i += 1
+    return i
+
+
+def _ordinal_end(text: str, i: int) -> Optional[int]:
+    """Fin del ordinal (``20-a``, ``1-ajn``) que empieza en ``i``, o ``None``."""
+    digits = _digits_end(text, i)
+    if digits == i:
+        return None
+    for ending in _ORDINAL_ENDINGS:
+        end = digits + len(ending)
+        if text.startswith(ending, digits) and not (end < len(text) and text[end].isalnum()):
+            return end
+    return None
+
+
+def _number_end(text: str, i: int) -> Optional[int]:
+    """Fin del número (``1887``, ``3,14``, ``50%``) que empieza en ``i``, o ``None``."""
+    end = _digits_end(text, i)
+    if end == i:
+        return None
+    # Un punto o una coma solo forman parte del número si les sigue una cifra.
+    while end + 1 < len(text) and text[end] in ".," and text[end + 1].isdecimal():
+        end = _digits_end(text, end + 1)
+    if end < len(text) and text[end] == "%":
+        end += 1
+    return end
+
+
+def _word_end(text: str, i: int, quote_open: bool) -> int:
+    """Fin de la palabra que empieza en ``i``, incluida su posible elisión.
+
+    Un apóstrofo final se queda en la palabra en dos casos:
+
+    * Es ``l'``, aunque le siga otra letra (``l'urbo``).
+    * No le sigue una letra y no cierra una comilla simple (``dom'``).
+    """
+    end = i + 1
+    while end < len(text) and text[end].isalnum():
+        end += 1
+    if end == len(text) or text[end] != "'":
+        return end
+    followed_by_letter = end + 1 < len(text) and text[end + 1].isalpha()
+    if followed_by_letter:
+        keep_apostrophe = text[i:end].lower() == "l"
+    else:
+        keep_apostrophe = not quote_open
+    return end + 1 if keep_apostrophe else end
+
+
+def _read_token(text: str, i: int, quote_open: bool) -> Tuple[int, str]:
+    """Devuelve ``(fin, tipo)`` del token que empieza en la posición ``i``."""
+    readers = (
+        (_url_end, URL),
+        (_email_end, EMAIL),
+        (_abbreviation_end, ABBR),
+        (_ordinal_end, ORDINAL),
+        (_number_end, NUM),
+    )
+    for reader, kind in readers:
+        end = reader(text, i)
+        if end is not None:
+            return end, kind
+    if text[i].isalpha():
+        return _word_end(text, i, quote_open), WORD
+    if text.startswith("...", i):
+        return i + 3, PUNCT
+    return i + 1, PUNCT if text[i] in _PUNCT_CHARS else SYM
+
+
+def _opens_quote(text: str, i: int) -> bool:
+    """¿El apóstrofo de la posición ``i`` abre una comilla simple (``'hundo``)?"""
+    after_word = i > 0 and text[i - 1].isalnum()
+    before_letter = i + 1 < len(text) and text[i + 1].isalpha()
+    return before_letter and not after_word
 
 
 class Tokenizer:
@@ -88,12 +191,19 @@ class Tokenizer:
 
         ``text`` debe estar ya normalizado.
         """
-        for match in _TOKEN_RE.finditer(text):
-            kind = match.lastgroup or "OTHER"
-            value = match.group()
-            if kind == "OTHER":
-                kind = PUNCT if value in _PUNCT_CHARS else SYM
-            yield match.start(), value, kind
+        i = 0
+        quote_open = False  # Para distinguir la comilla de cierre de una elisión.
+        while i < len(text):
+            if text[i].isspace():
+                if text[i] == "\n":
+                    quote_open = False
+                i += 1
+                continue
+            end, kind = _read_token(text, i, quote_open)
+            if text[i:end] == "'":
+                quote_open = not quote_open and _opens_quote(text, i)
+            yield i, text[i:end], kind
+            i = end
 
     def __call__(self, text: str) -> Doc:
         """Tokeniza ``text`` y devuelve un :class:`Doc` sin anotar."""
@@ -119,6 +229,10 @@ def word_tokenizer(text: str) -> List[str]:
 #: Signos que cierran frase.
 SENTENCE_END = frozenset({".", "!", "?", "...", "…"})
 
+#: Abreviaturas que suelen cerrar una enumeración y, por tanto, pueden cerrar
+#: frase. Las demás (``ekz.``, ``d-ro``…) van seguidas de lo que introducen.
+_CLOSING_ABBREVIATIONS = frozenset({"k.t.p.", "ktp.", "k.a.", "k.s."})
+
 #: Signos que pueden ir justo detrás del final de frase y pertenecen a ella.
 _CLOSERS = frozenset({'"', "'", ")", "]", "»", "”"})
 
@@ -129,7 +243,8 @@ def mark_sentence_starts(doc: Doc) -> Doc:
     Una frase termina en ``. ! ? …`` (más comillas o paréntesis de cierre) y
     la siguiente empieza **solo** si el siguiente token empieza por mayúscula,
     por cifra o es un signo de apertura. Así ``ekz. la hundo`` o ``3.14`` no
-    cortan la frase (las abreviaturas y números ya son un único token).
+    cortan la frase (las abreviaturas y números ya son un único token). Las
+    abreviaturas que cierran enumeraciones (``ktp.``) siguen la misma regla.
 
     Tampoco cortan las iniciales de nombres (``L. L. Zamenhof``): una sola
     letra mayúscula pegada al punto. Los saltos de línea dobles (párrafos)
@@ -148,7 +263,7 @@ def mark_sentence_starts(doc: Doc) -> Doc:
         # Párrafo nuevo: el espacio previo contiene una línea en blanco.
         if i > 0 and "\n\n" in tokens[i - 1].whitespace_:
             tok.is_sent_start = True
-        if tok.text in SENTENCE_END:
+        if tok.text in SENTENCE_END or tok.norm_ in _CLOSING_ABBREVIATIONS:
             # Inicial de un nombre: "L. L. Zamenhof" no son tres frases.
             if tok.text == "." and i > 0:
                 prev = tokens[i - 1]
