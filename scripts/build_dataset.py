@@ -67,7 +67,7 @@ import vortilo
 API = "https://eo.wikipedia.org/w/api.php"
 # Wikimedia pide un User-Agent descriptivo con una forma de contacto (URL o correo).
 USER_AGENT = (
-    "vortilo-dataset/0.1 (https://github.com/pepehernandez05/vortilo; "
+    "vortilo-dataset/0.1 (https://github.com/pepehernandez05/Mineria_de_Textos_Esperanto; "
     "CUNEF Mineria de Textos; practica academica)"
 )
 #: Retraso de replicación máximo (s) que toleramos; si el servidor va peor,
